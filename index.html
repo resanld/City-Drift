@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <title>City Drift: Battle Mode</title>
+    <title>City Drift: Battle OBJ</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Arial', sans-serif; user-select: none; }
         
@@ -17,7 +17,7 @@
         .stat { font-size: 20px; font-weight: bold; margin-bottom: 5px; text-shadow: 1px 1px 2px black; }
         #hp-bar { width: 200px; height: 20px; background: #333; margin-top: 5px; border: 1px solid white; }
         #hp-fill { width: 100%; height: 100%; background: #00ff00; transition: width 0.2s, background 0.2s; }
-        
+
         #controls { 
             position: absolute; bottom: 20px; right: 20px; 
             color: rgba(255,255,255,0.8); text-align: right; font-size: 14px; 
@@ -26,7 +26,7 @@
 
         #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: white; font-size: 24px; font-weight: bold; background: rgba(0,0,0,0.8); padding: 20px;
+            color: white; font-size: 24px; font-weight: bold; background: rgba(0,0,0,0.8); padding: 40px;
             z-index: 200; border: 2px solid white; text-align: center;
         }
 
@@ -48,7 +48,14 @@
 </head>
 <body>
 
-<div id="loading">Lade Battle Zone...<br><small>Benötigt: porsche.obj & sls.obj</small></div>
+<div id="loading">
+    Lade Modelle...<br>
+    <span style="font-size:16px; color:#aaa">Bitte warten...</span>
+    <div id="error-msg" style="color:red; font-size:14px; margin-top:10px; display:none;">
+        FEHLER: Modelle konnten nicht geladen werden!<br>
+        Prüfe: Live Server aktiv? Dateinamen korrekt?
+    </div>
+</div>
 
 <div id="hud">
     <div class="stat" style="color:#00d2ff">METROPOLIS BATTLE</div>
@@ -60,12 +67,11 @@
 <div id="controls">
     <b>W</b> Gas | <b>S</b> Bremse/Rückwärts<br>
     <b>A/D</b> Lenken | <b>SPACE</b> Drift<br>
-    Ramme Autos um den Kampf zu starten!
+    Ramme Gegner um Kampf zu starten!
 </div>
 
 <div id="gameover">
-    <h1 style="margin-top:0; color:#ff0000; font-style:italic;">GAME OVER</h1>
-    <p id="gameover-msg">Du wurdest zerstört.</p>
+    <h1 style="margin-top:0; color:#ff0000; font-style:italic;">ZERSTÖRT</h1>
     <button onclick="location.reload()">Neustart</button>
 </div>
 
@@ -74,12 +80,13 @@
     import { OBJLoader } from 'https://cdn.skypack.dev/three@0.132.2/examples/jsm/loaders/OBJLoader.js';
     import { GUI } from 'https://cdn.skypack.dev/dat.gui';
 
-    // === EINSTELLUNGEN ===
+    // === DATEIEN ===
     const PLAYER_FILE = 'porsche.obj'; 
     const AI_FILE = 'sls.obj'; 
 
-    const PLAYER_OPTS = { scale: 2.0, lift: 1.1, rotX: 0, rotY: Math.PI };
-    const AI_OPTS = { scale: 2.0, lift: 1.1, rotX: -Math.PI / 2, rotY: Math.PI };
+    // === EINSTELLUNGEN ===
+    const PLAYER_OPTS = { scale: 2.0, lift: 1.1, rotX: 0, rotY: Math.PI }; // Player: 180 Grad Drehung
+    const AI_OPTS = { scale: 2.0, lift: 1.1, rotX: 0, rotY: Math.PI };     // AI: Auch 180 Grad (angepasst)
 
     // STADT CONFIG
     const BLOCK_SIZE = 80;    
@@ -116,7 +123,7 @@
 
     function init() {
         scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x050505); // Dunkler für Battle-Atmosphäre
+        scene.background = new THREE.Color(0x050505); 
         scene.fog = new THREE.Fog(0x050505, 50, 700);
 
         camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 2000);
@@ -127,7 +134,7 @@
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(renderer.domElement);
 
-        const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
         scene.add(ambient);
         
         const dirLight = new THREE.DirectionalLight(0xffeebb, 0.8);
@@ -184,36 +191,46 @@
 
         const loader = new OBJLoader();
 
-        // Spieler
+        // 1. SPIELER LADEN
         loader.load(PLAYER_FILE, (object) => {
             loadedCarMesh = object;
             object.scale.set(PLAYER_OPTS.scale, PLAYER_OPTS.scale, PLAYER_OPTS.scale);
             object.position.y = PLAYER_OPTS.lift;
             object.rotation.y = PLAYER_OPTS.rotY;
+            
             const paint = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.7, roughness: 0.2 });
             object.traverse(c => { if(c.isMesh) { c.material = paint; c.castShadow = true; }});
             carModel.add(object);
+            
+            // Reifen für Rauch
             let t1 = new THREE.Object3D(); t1.position.set(-1.5,0,1.5); carModel.add(t1); tires.push(t1);
             let t2 = new THREE.Object3D(); t2.position.set(1.5,0,1.5); carModel.add(t2); tires.push(t2);
-            
-            // AI laden
+
+            // 2. KI LADEN
             loadAICar(loader);
-        }, undefined, () => {
-            const box = new THREE.Mesh(new THREE.BoxGeometry(2,1,4), new THREE.MeshStandardMaterial({color:'red'})); carModel.add(box);
-            loadAICar(loader);
+
+        }, undefined, (error) => {
+            console.error("Fehler beim Laden von porsche.obj", error);
+            document.getElementById('error-msg').style.display = 'block';
         });
     }
 
     function loadAICar(loader) {
         loader.load(AI_FILE, (object) => {
             document.getElementById('loading').style.display = 'none';
+            console.log("AI SLS Loaded");
+            
+            // AI Material (Silber)
             const aiPaint = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.6, roughness: 0.3 });
             object.traverse(c => { if(c.isMesh) { c.material = aiPaint; c.castShadow = true; }});
+
             aiCarTemplate = object;
             spawnTraffic(15);
-        }, undefined, () => {
-            document.getElementById('loading').innerText = "SLS.obj fehlt! Nutze Boxen.";
-            setTimeout(() => { document.getElementById('loading').style.display = 'none'; spawnTraffic(15); }, 2000);
+
+        }, undefined, (error) => {
+            console.error("Fehler beim Laden von sls.obj", error);
+            document.getElementById('error-msg').style.display = 'block';
+            document.getElementById('error-msg').innerHTML += "<br>Fehler bei sls.obj";
         });
     }
 
@@ -291,20 +308,18 @@
         group.position.set(x, 0, z); scene.add(group);
     }
 
-    // --- AI & TRAFFIC & COMBAT ---
+    // --- KI LOGIK ---
     function spawnTraffic(count) {
-        if (!aiCarTemplate && !document.getElementById('loading').innerText.includes('Box')) return; 
         for(let i=0; i<count; i++) {
-            let aiMesh;
             const aiGroup = new THREE.Group();
             if (aiCarTemplate) {
-                aiMesh = aiCarTemplate.clone();
+                const aiMesh = aiCarTemplate.clone();
                 aiMesh.scale.set(AI_OPTS.scale, AI_OPTS.scale, AI_OPTS.scale);
                 aiMesh.position.y = AI_OPTS.lift;
                 aiMesh.rotation.x = AI_OPTS.rotX;
                 aiMesh.rotation.y = AI_OPTS.rotY;
-            } else { aiMesh = new THREE.Mesh(new THREE.BoxGeometry(2,1.5,4.5), new THREE.MeshStandardMaterial({color: 'blue'})); }
-            aiGroup.add(aiMesh);
+                aiGroup.add(aiMesh);
+            }
 
             const totalSize = BLOCK_SIZE + STREET_WIDTH;
             const gx = Math.floor(Math.random() * CITY_SIZE) - CITY_SIZE/2;
@@ -317,14 +332,7 @@
             else { x = gx * totalSize + totalSize/2 - laneOffset; z = gz * totalSize; rot = Math.PI; }
 
             aiGroup.position.set(x, 0, z); aiGroup.rotation.y = rot;
-            
-            // KAMPF WERTE
-            aiGroup.userData = { 
-                speed: 0.6 + Math.random() * 0.4, 
-                state: 'drive', // 'drive' or 'attack'
-                lastShot: 0,
-                velocity: new THREE.Vector3(0,0,0) // Für Bounce Physik
-            };
+            aiGroup.userData = { speed: 0.6 + Math.random() * 0.4, state: 'drive', lastShot: 0, velocity: new THREE.Vector3(0,0,0) };
             scene.add(aiGroup);
             aiCars.push(aiGroup);
         }
@@ -335,16 +343,14 @@
         const totalSize = BLOCK_SIZE + STREET_WIDTH;
 
         aiCars.forEach(ai => {
-            // Physik Update (Bounce dämpfen)
             ai.position.add(ai.userData.velocity);
-            ai.userData.velocity.multiplyScalar(0.9); // Reibung
+            ai.userData.velocity.multiplyScalar(0.9);
 
-            // --- STATUS: DRIVE ---
             if (ai.userData.state === 'drive') {
-                const forward = new THREE.Vector3(0,0,1).applyAxisAngle(new THREE.Vector3(0,1,0), ai.rotation.y);
+                // Wir nehmen an, dass die Group-Rotation die Bewegungsrichtung bestimmt
+                // lokales -Z ist vorwärts für das Group Objekt
                 const moveDir = new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0), ai.rotation.y);
 
-                // Kollisions-Check (Raycast)
                 raycaster.set(ai.position, moveDir);
                 const hitsPlayer = raycaster.intersectObject(playerGroup, true);
                 let blocked = false;
@@ -354,7 +360,6 @@
                     ai.position.add(moveDir.multiplyScalar(ai.userData.speed));
                 }
 
-                // Kreuzung
                 const centerOffset = totalSize / 2;
                 const relX = (ai.position.x + 10000 + centerOffset) % totalSize; 
                 const relZ = (ai.position.z + 10000 + centerOffset) % totalSize;
@@ -363,26 +368,24 @@
                     ai.rotation.y += Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2;
                 }
                 
-                // Endlos Loop
                 const limit = (CITY_SIZE * totalSize) / 2;
                 if (ai.position.x > limit) ai.position.x = -limit + 10;
                 if (ai.position.x < -limit) ai.position.x = limit - 10;
                 if (ai.position.z > limit) ai.position.z = -limit + 10;
                 if (ai.position.z < -limit) ai.position.z = limit - 10;
             } 
-            
-            // --- STATUS: ATTACK (Aggro nach Crash) ---
             else if (ai.userData.state === 'attack') {
-                // Zur Spielerposition drehen
                 ai.lookAt(playerGroup.position.x, ai.position.y, playerGroup.position.z);
-                // WICHTIG: Das Modell ist um 180 gedreht, lookAt dreht "Z-Forward". 
-                // Da wir das Modell auch gedreht haben, könnte das passen oder invertiert sein.
-                // In diesem Fall drehen wir es einfach um PI extra, falls es falsch rum schaut
+                // Group Rotation zeigt jetzt zum Spieler.
+                // Da das Modell um 180 gedreht ist (AI_OPTS.rotY = PI), und lookAt Z-Forward nutzt, 
+                // müssen wir die Gruppe eventuell um 180 drehen, damit die "Nase" zeigt.
+                // ThreeJS lookAt dreht das Objekt so, dass lokale +Z zum Ziel zeigt.
+                // Wenn unsere "Nase" lokales -Z ist (wegen Modellrotation), dann zeigt jetzt der "Hintern" zum Spieler.
+                // Also:
                 ai.rotation.y += Math.PI;
 
-                // Schießen
                 const now = Date.now();
-                if (now - ai.userData.lastShot > 800) { // Feuerrate
+                if (now - ai.userData.lastShot > 800) { 
                     shoot(ai.position, playerGroup.position);
                     ai.userData.lastShot = now;
                 }
@@ -395,12 +398,9 @@
         const bulletMat = new THREE.MeshBasicMaterial({color: 0xff0000});
         const bullet = new THREE.Mesh(bulletGeo, bulletMat);
         bullet.position.copy(from);
-        bullet.position.y += 1.5; // Höhe
-        
-        // Richtung berechnen
+        bullet.position.y += 1.5; 
         const direction = new THREE.Vector3().subVectors(to, from).normalize();
-        bullet.userData = { vel: direction.multiplyScalar(3.0), life: 100 }; // Schnell
-        
+        bullet.userData = { vel: direction.multiplyScalar(3.0), life: 100 }; 
         scene.add(bullet);
         bullets.push(bullet);
     }
@@ -410,19 +410,10 @@
             const b = bullets[i];
             b.position.add(b.userData.vel);
             b.userData.life--;
-            
-            // Treffer Check (Spieler)
             if (b.position.distanceTo(playerGroup.position) < 3.0) {
-                takeDamage(10);
-                scene.remove(b);
-                bullets.splice(i, 1);
-                continue;
+                takeDamage(10); scene.remove(b); bullets.splice(i, 1); continue;
             }
-
-            if(b.userData.life <= 0) {
-                scene.remove(b);
-                bullets.splice(i, 1);
-            }
+            if(b.userData.life <= 0) { scene.remove(b); bullets.splice(i, 1); }
         }
     }
 
@@ -430,41 +421,26 @@
         if(isGameOver) return;
         playerHealth -= amount;
         if(playerHealth < 0) playerHealth = 0;
-        
-        // UI Update
         document.getElementById('hp-fill').style.width = playerHealth + '%';
-        // Farbe ändern bei niedrigem Leben
         if(playerHealth < 30) document.getElementById('hp-fill').style.backgroundColor = 'red';
-        else document.getElementById('hp-fill').style.backgroundColor = '#00ff00';
-
         if(playerHealth <= 0) {
             isGameOver = true;
             document.getElementById('gameover').style.display = 'block';
         }
     }
 
-    // --- CAR TO CAR KOLLISION ---
     function checkCarCollisions() {
         const pPos = playerGroup.position;
-        const radius = 3.5; // Kollisionsradius
-
+        const radius = 3.5; 
         aiCars.forEach(ai => {
             const dist = pPos.distanceTo(ai.position);
             if (dist < radius) {
-                // CRASH!
-                
-                // 1. Spieler prallt ab
-                speed = -speed * 0.8; // Umkehren
-                
-                // 2. AI wird weggeschleudert
-                // Vektor vom Spieler zum AI Auto
+                speed = -speed * 0.8; 
                 const impactDir = new THREE.Vector3().subVectors(ai.position, pPos).normalize();
-                ai.userData.velocity.add(impactDir.multiplyScalar(2.5)); // Starker Impuls
-                
-                // 3. AI wird AGGRO
+                ai.userData.velocity.add(impactDir.multiplyScalar(2.5)); 
                 if (ai.userData.state !== 'attack') {
                     ai.userData.state = 'attack';
-                    // Auto rot färben als Feedback
+                    // Einfärben (Kind-Elemente finden)
                     ai.children[0].traverse(c => {
                         if(c.isMesh && c.material) c.material.color.setHex(0xff0000);
                     });
@@ -504,7 +480,6 @@
         const velocity = new THREE.Vector3(0, 0, -speed).applyAxisAngle(new THREE.Vector3(0,1,0), playerGroup.rotation.y);
         const newPos = playerGroup.position.clone().add(velocity);
 
-        // Kollision Gebäude
         let collision = false;
         const carSize = 2.0; 
         for (let b of colliders) {
@@ -517,10 +492,8 @@
 
         if (collision) { speed = -speed * 0.5; } else { playerGroup.position.copy(newPos); }
 
-        // Car vs Car Check
         checkCarCollisions();
 
-        // Drift
         let targetAngle = 0;
         if (keys.space && Math.abs(speed) > 0.5) {
             if (keys.a) targetAngle = 0.5; else if (keys.d) targetAngle = -0.5;

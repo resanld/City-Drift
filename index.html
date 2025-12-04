@@ -2,9 +2,9 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <title>City Drift: Battle OBJ</title>
+    <title>City Drift: Battle OBJ Edition</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Arial', sans-serif; user-select: none; }
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Arial', sans-serif; user-select: none; }
         
         #hud {
             position: absolute; top: 20px; left: 20px;
@@ -24,11 +24,13 @@
             background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; pointer-events: none;
         }
 
+        /* LADEBILDSCHIRM & FEHLERANZEIGE */
         #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: white; font-size: 24px; font-weight: bold; background: rgba(0,0,0,0.8); padding: 40px;
-            z-index: 200; border: 2px solid white; text-align: center;
+            color: white; font-size: 24px; font-weight: bold; background: rgba(0,0,0,0.9); padding: 40px;
+            z-index: 200; border: 2px solid white; text-align: center; border-radius: 10px;
         }
+        .error { color: #ff4444; font-size: 18px; margin-top: 15px; display: none; }
 
         #gameover {
             display: none; position: absolute; top: 50%; left: 50%;
@@ -49,25 +51,26 @@
 <body>
 
 <div id="loading">
-    Lade Modelle...<br>
-    <span style="font-size:16px; color:#aaa">Bitte warten...</span>
-    <div id="error-msg" style="color:red; font-size:14px; margin-top:10px; display:none;">
-        FEHLER: Modelle konnten nicht geladen werden!<br>
-        Prüfe: Live Server aktiv? Dateinamen korrekt?
+    Lade Stadt & Modelle...<br>
+    <small style="color:#aaa">Warte auf: porsche.obj & sls.obj</small>
+    <div id="error-msg" class="error">
+        FEHLER: Dateien nicht gefunden!<br>
+        1. Nutzt du "Live Server"?<br>
+        2. Heißen die Dateien exakt "porsche.obj" und "sls.obj"?
     </div>
 </div>
 
 <div id="hud">
     <div class="stat" style="color:#00d2ff">METROPOLIS BATTLE</div>
     <div class="stat">Speed: <span id="speed-text">0</span> km/h</div>
-    <div class="stat">Health:</div>
+    <div class="stat">Zustand:</div>
     <div id="hp-bar"><div id="hp-fill"></div></div>
 </div>
 
 <div id="controls">
     <b>W</b> Gas | <b>S</b> Bremse/Rückwärts<br>
     <b>A/D</b> Lenken | <b>SPACE</b> Drift<br>
-    Ramme Gegner um Kampf zu starten!
+    Ramme Gegner um den Kampf zu starten!
 </div>
 
 <div id="gameover">
@@ -80,13 +83,27 @@
     import { OBJLoader } from 'https://cdn.skypack.dev/three@0.132.2/examples/jsm/loaders/OBJLoader.js';
     import { GUI } from 'https://cdn.skypack.dev/dat.gui';
 
-    // === DATEIEN ===
+    // === DATEINAMEN ===
     const PLAYER_FILE = 'porsche.obj'; 
     const AI_FILE = 'sls.obj'; 
 
-    // === EINSTELLUNGEN ===
-    const PLAYER_OPTS = { scale: 2.0, lift: 1.1, rotX: 0, rotY: Math.PI }; // Player: 180 Grad Drehung
-    const AI_OPTS = { scale: 2.0, lift: 1.1, rotX: 0, rotY: Math.PI };     // AI: Auch 180 Grad (angepasst)
+    // === EINSTELLUNGEN (HIER DREHEN/SKALIEREN) ===
+    
+    // Spieler (Porsche)
+    const PLAYER_OPTS = { 
+        scale: 2.0, 
+        lift: 1.1, 
+        rotX: 0, 
+        rotY: Math.PI // 180 Grad Drehung (oft nötig, damit er nach vorne schaut)
+    };
+
+    // AI (SLS)
+    const AI_OPTS = { 
+        scale: 2.0, 
+        lift: 1.1, 
+        rotX: 0,      // Falls Nase unten: hier z.B. -Math.PI/2 testen
+        rotY: Math.PI // Falls rückwärts: hier anpassen
+    };
 
     // STADT CONFIG
     const BLOCK_SIZE = 80;    
@@ -114,9 +131,6 @@
     let isGameOver = false;
     
     let keys = { w:false, a:false, s:false, d:false, space:false };
-
-    // Debug GUI
-    const params = { scale: PLAYER_OPTS.scale, lift: PLAYER_OPTS.lift, rotationY: 180 };
 
     init();
     animate();
@@ -146,7 +160,7 @@
         scene.add(dirLight);
 
         createCity();
-        loadAssets();
+        loadAssets(); // Lädt Spieler und dann AI
         initGUI();
 
         window.addEventListener('keydown', e => { if(keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = true; if(e.code === 'Space') keys.space = true; if(e.key.toLowerCase() === 'r') location.reload(); });
@@ -156,16 +170,17 @@
 
     function initGUI() {
         const gui = new GUI();
-        const pFolder = gui.addFolder('Spieler Setup');
+        const pFolder = gui.addFolder('Spieler Setup (Live)');
         pFolder.add(PLAYER_OPTS, 'scale', 0.1, 5.0).onChange(v => { if(loadedCarMesh) loadedCarMesh.scale.set(v,v,v); });
         pFolder.add(PLAYER_OPTS, 'lift', -2, 5).onChange(v => { if(loadedCarMesh) loadedCarMesh.position.y = v; });
         pFolder.add(PLAYER_OPTS, 'rotY', 0, 6.28).step(0.1).name('Drehung Y').onChange(v => { if(loadedCarMesh) loadedCarMesh.rotation.y = v; });
+        pFolder.add(PLAYER_OPTS, 'rotX', -6.28, 6.28).step(0.1).name('Neigung X').onChange(v => { if(loadedCarMesh) loadedCarMesh.rotation.x = v; });
         
-        const aiFolder = gui.addFolder('AI Setup');
+        const aiFolder = gui.addFolder('AI Setup (Live)');
         aiFolder.add(AI_OPTS, 'scale', 0.1, 5.0).onChange(updateAIModels);
         aiFolder.add(AI_OPTS, 'lift', -2, 5).onChange(updateAIModels);
-        aiFolder.add(AI_OPTS, 'rotX', -6.28, 6.28).step(0.1).name('Nase (X)').onChange(updateAIModels);
-        aiFolder.add(AI_OPTS, 'rotY', 0, 6.28).step(0.1).name('Drehung (Y)').onChange(updateAIModels);
+        aiFolder.add(AI_OPTS, 'rotX', -6.28, 6.28).step(0.1).name('Neigung X').onChange(updateAIModels);
+        aiFolder.add(AI_OPTS, 'rotY', 0, 6.28).step(0.1).name('Drehung Y').onChange(updateAIModels);
     }
 
     function updateAIModels() {
@@ -191,7 +206,7 @@
 
         const loader = new OBJLoader();
 
-        // 1. SPIELER LADEN
+        // 1. SPIELER LADEN (Porsche)
         loader.load(PLAYER_FILE, (object) => {
             loadedCarMesh = object;
             object.scale.set(PLAYER_OPTS.scale, PLAYER_OPTS.scale, PLAYER_OPTS.scale);
@@ -202,25 +217,24 @@
             object.traverse(c => { if(c.isMesh) { c.material = paint; c.castShadow = true; }});
             carModel.add(object);
             
-            // Reifen für Rauch
             let t1 = new THREE.Object3D(); t1.position.set(-1.5,0,1.5); carModel.add(t1); tires.push(t1);
             let t2 = new THREE.Object3D(); t2.position.set(1.5,0,1.5); carModel.add(t2); tires.push(t2);
 
-            // 2. KI LADEN
+            // Nach Spieler laden wir die AI
             loadAICar(loader);
 
         }, undefined, (error) => {
-            console.error("Fehler beim Laden von porsche.obj", error);
+            console.error("Fehler bei porsche.obj", error);
             document.getElementById('error-msg').style.display = 'block';
+            document.getElementById('error-msg').innerHTML += "<br>Kann porsche.obj nicht finden.";
         });
     }
 
     function loadAICar(loader) {
         loader.load(AI_FILE, (object) => {
-            document.getElementById('loading').style.display = 'none';
+            document.getElementById('loading').style.display = 'none'; // Erfolg!
             console.log("AI SLS Loaded");
             
-            // AI Material (Silber)
             const aiPaint = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.6, roughness: 0.3 });
             object.traverse(c => { if(c.isMesh) { c.material = aiPaint; c.castShadow = true; }});
 
@@ -228,13 +242,13 @@
             spawnTraffic(15);
 
         }, undefined, (error) => {
-            console.error("Fehler beim Laden von sls.obj", error);
+            console.error("Fehler bei sls.obj", error);
             document.getElementById('error-msg').style.display = 'block';
-            document.getElementById('error-msg').innerHTML += "<br>Fehler bei sls.obj";
+            document.getElementById('error-msg').innerHTML += "<br>Kann sls.obj nicht finden.";
         });
     }
 
-    // --- STADT ---
+    // --- STADT & PARKS ---
     function createCity() {
         const groundGeo = new THREE.PlaneGeometry(3000, 3000);
         const groundMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
@@ -292,10 +306,8 @@
             tree.castShadow = true; scene.add(tree);
         }
         colliders.push({ x: x, z: z, w: BLOCK_SIZE, d: BLOCK_SIZE });
-        // Zäune
         const fenceH = 2.5; const fenceThick = 1; const fenceMat = new THREE.MeshStandardMaterial({ color: 0x554433 }); 
-        const half = BLOCK_SIZE / 2;
-        const walls = [[x, fenceH/2, z-half, BLOCK_SIZE, fenceThick], [x, fenceH/2, z+half, BLOCK_SIZE, fenceThick], [x-half, fenceH/2, z, fenceThick, BLOCK_SIZE], [x+half, fenceH/2, z, fenceThick, BLOCK_SIZE]];
+        const walls = [[x, fenceH/2, z-BLOCK_SIZE/2, BLOCK_SIZE, fenceThick], [x, fenceH/2, z+BLOCK_SIZE/2, BLOCK_SIZE, fenceThick], [x-BLOCK_SIZE/2, fenceH/2, z, fenceThick, BLOCK_SIZE], [x+BLOCK_SIZE/2, fenceH/2, z, fenceThick, BLOCK_SIZE]];
         walls.forEach(w => {
             const wall = new THREE.Mesh(new THREE.BoxGeometry(w[3]==BLOCK_SIZE?BLOCK_SIZE:1, fenceH, w[4]==BLOCK_SIZE?BLOCK_SIZE:1), fenceMat);
             wall.position.set(w[0], w[1], w[2]); wall.castShadow=true; scene.add(wall);
@@ -308,18 +320,19 @@
         group.position.set(x, 0, z); scene.add(group);
     }
 
-    // --- KI LOGIK ---
+    // --- KI SPAWN ---
     function spawnTraffic(count) {
+        if (!aiCarTemplate) return; 
         for(let i=0; i<count; i++) {
             const aiGroup = new THREE.Group();
-            if (aiCarTemplate) {
-                const aiMesh = aiCarTemplate.clone();
-                aiMesh.scale.set(AI_OPTS.scale, AI_OPTS.scale, AI_OPTS.scale);
-                aiMesh.position.y = AI_OPTS.lift;
-                aiMesh.rotation.x = AI_OPTS.rotX;
-                aiMesh.rotation.y = AI_OPTS.rotY;
-                aiGroup.add(aiMesh);
-            }
+            
+            // CLONE TEMPLATE
+            const aiMesh = aiCarTemplate.clone();
+            aiMesh.scale.set(AI_OPTS.scale, AI_OPTS.scale, AI_OPTS.scale);
+            aiMesh.position.y = AI_OPTS.lift;
+            aiMesh.rotation.x = AI_OPTS.rotX;
+            aiMesh.rotation.y = AI_OPTS.rotY;
+            aiGroup.add(aiMesh);
 
             const totalSize = BLOCK_SIZE + STREET_WIDTH;
             const gx = Math.floor(Math.random() * CITY_SIZE) - CITY_SIZE/2;
@@ -332,12 +345,20 @@
             else { x = gx * totalSize + totalSize/2 - laneOffset; z = gz * totalSize; rot = Math.PI; }
 
             aiGroup.position.set(x, 0, z); aiGroup.rotation.y = rot;
-            aiGroup.userData = { speed: 0.6 + Math.random() * 0.4, state: 'drive', lastShot: 0, velocity: new THREE.Vector3(0,0,0) };
+            
+            // KAMPF WERTE
+            aiGroup.userData = { 
+                speed: 0.6 + Math.random() * 0.4, 
+                state: 'drive', 
+                lastShot: 0,
+                velocity: new THREE.Vector3(0,0,0) 
+            };
             scene.add(aiGroup);
             aiCars.push(aiGroup);
         }
     }
 
+    // --- LOGIK UPDATE ---
     function updateAI() {
         const raycaster = new THREE.Raycaster();
         const totalSize = BLOCK_SIZE + STREET_WIDTH;
@@ -347,17 +368,16 @@
             ai.userData.velocity.multiplyScalar(0.9);
 
             if (ai.userData.state === 'drive') {
-                // Wir nehmen an, dass die Group-Rotation die Bewegungsrichtung bestimmt
-                // lokales -Z ist vorwärts für das Group Objekt
                 const moveDir = new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0), ai.rotation.y);
+                const checkDir = new THREE.Vector3(0,0,1).applyAxisAngle(new THREE.Vector3(0,1,0), ai.rotation.y); // Raycast Richtung
 
-                raycaster.set(ai.position, moveDir);
+                raycaster.set(ai.position, checkDir);
                 const hitsPlayer = raycaster.intersectObject(playerGroup, true);
                 let blocked = false;
-                if (hitsPlayer.length > 0 && hitsPlayer[0].distance < 15) blocked = true;
+                if (hitsPlayer.length > 0 && hitsPlayer[0].distance < 20) blocked = true;
 
                 if (!blocked) {
-                    ai.position.add(moveDir.multiplyScalar(ai.userData.speed));
+                    ai.position.add(checkDir.multiplyScalar(ai.userData.speed));
                 }
 
                 const centerOffset = totalSize / 2;
@@ -376,13 +396,7 @@
             } 
             else if (ai.userData.state === 'attack') {
                 ai.lookAt(playerGroup.position.x, ai.position.y, playerGroup.position.z);
-                // Group Rotation zeigt jetzt zum Spieler.
-                // Da das Modell um 180 gedreht ist (AI_OPTS.rotY = PI), und lookAt Z-Forward nutzt, 
-                // müssen wir die Gruppe eventuell um 180 drehen, damit die "Nase" zeigt.
-                // ThreeJS lookAt dreht das Objekt so, dass lokale +Z zum Ziel zeigt.
-                // Wenn unsere "Nase" lokales -Z ist (wegen Modellrotation), dann zeigt jetzt der "Hintern" zum Spieler.
-                // Also:
-                ai.rotation.y += Math.PI;
+                ai.rotation.y += Math.PI; // Korrektur Blickrichtung
 
                 const now = Date.now();
                 if (now - ai.userData.lastShot > 800) { 
@@ -440,7 +454,7 @@
                 ai.userData.velocity.add(impactDir.multiplyScalar(2.5)); 
                 if (ai.userData.state !== 'attack') {
                     ai.userData.state = 'attack';
-                    // Einfärben (Kind-Elemente finden)
+                    // Auto rot färben
                     ai.children[0].traverse(c => {
                         if(c.isMesh && c.material) c.material.color.setHex(0xff0000);
                     });
@@ -462,7 +476,6 @@
         requestAnimationFrame(animate);
 
         document.getElementById('speed-text').innerText = Math.abs(Math.floor(speed * 120));
-        document.getElementById('pos-text').innerText = `${Math.round(playerGroup.position.x)}, ${Math.round(playerGroup.position.z)}`;
 
         if (keys.w) speed += acceleration;
         else if (keys.s) speed -= acceleration;

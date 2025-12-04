@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <title>City Drift: Metropolis - FIXED</title>
+    <title>City Drift: Metropolis v2 (Parks & AI)</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Arial', sans-serif; user-select: none; }
         
@@ -25,16 +25,16 @@
         #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             color: white; font-size: 24px; font-weight: bold; background: rgba(0,0,0,0.8); padding: 20px;
-            z-index: 200; border: 2px solid white;
+            z-index: 200; border: 2px solid white; text-align: center;
         }
     </style>
 </head>
 <body>
 
-<div id="loading">Generiere Stadt & Lade Auto...</div>
+<div id="loading">Lade Stadt & Modelle...<br><small>Benötigt: porsche.obj & sls.obj</small></div>
 
 <div id="hud">
-    <div class="stat" style="color:#00d2ff">CITY DRIFT</div>
+    <div class="stat" style="color:#00d2ff">METROPOLIS</div>
     <div class="stat">Speed: <span id="speed-text">0</span> km/h</div>
     <div class="stat" style="font-size:14px; color:#aaa">Pos: <span id="pos-text">0, 0</span></div>
 </div>
@@ -50,30 +50,31 @@
     import { GUI } from 'https://cdn.skypack.dev/dat.gui';
 
     // === EINSTELLUNGEN ===
-    const CAR_FILE = 'porsche.obj'; 
+    const PLAYER_FILE = 'porsche.obj'; 
+    const AI_FILE = 'sls.obj'; // Die Datei für die KI
+
+    // Gemeinsame Werte für BEIDE Autos (wie gewünscht)
     const CAR_SCALE = 2.0;    
     const CAR_LIFT = 1.1;     
-    
-    // HIER IST DER FIX: Rotation auf 180 Grad (Math.PI) gesetzt
     const CAR_ROTATION = Math.PI;   
 
     // STADT CONFIG
     const BLOCK_SIZE = 80;    
     const STREET_WIDTH = 40;  
-    const CITY_SIZE = 10;     
-    const BUILDING_HEIGHT_MIN = 20;
-    const BUILDING_HEIGHT_MAX = 120;
+    const CITY_SIZE = 12;     // 12x12 Blöcke
+    const PARK_CHANCE = 0.3;  // 30% Wahrscheinlichkeit für einen Park
 
     // Globale Variablen
     let scene, camera, renderer;
     let playerGroup, carModel, loadedCarMesh; 
     let tires = [], particles = [];
-    let colliders = []; 
+    let colliders = []; // Gebäude UND Zäune
     let aiCars = [];    
+    let aiCarTemplate = null; // Speichert das geladene SLS Modell
 
     // Physik
     let speed = 0;
-    let maxSpeed = 2.0; 
+    let maxSpeed = 2.2; 
     let acceleration = 0.015; 
     let friction = 0.98; 
     let turnSpeed = 0.045;
@@ -90,7 +91,7 @@
     function init() {
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x111111); 
-        scene.fog = new THREE.Fog(0x111111, 50, 600);
+        scene.fog = new THREE.Fog(0x111111, 50, 700);
 
         camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 2000);
         
@@ -101,27 +102,23 @@
         document.body.appendChild(renderer.domElement);
 
         // Licht
-        const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.5);
         scene.add(ambient);
         
         const dirLight = new THREE.DirectionalLight(0xffeebb, 0.8);
         dirLight.position.set(200, 500, 300);
         dirLight.castShadow = true;
         dirLight.shadow.mapSize.set(2048, 2048);
-        dirLight.shadow.camera.left = -500; dirLight.shadow.camera.right = 500;
-        dirLight.shadow.camera.top = 500; dirLight.shadow.camera.bottom = -500;
+        dirLight.shadow.camera.left = -600; dirLight.shadow.camera.right = 600;
+        dirLight.shadow.camera.top = 600; dirLight.shadow.camera.bottom = -600;
         scene.add(dirLight);
 
         // Stadt generieren
         createCity();
         
-        // KI Verkehr
-        spawnTraffic(15); 
-
-        // Spieler Auto laden
-        createCar();
+        // ZUERST Auto laden, DANN KI laden (damit wir das Template haben)
+        loadAssets();
         
-        // GUI
         initGUI();
 
         // Inputs
@@ -132,16 +129,77 @@
 
     function initGUI() {
         const gui = new GUI();
-        const folder = gui.addFolder('Auto Setup (Live)');
+        const folder = gui.addFolder('Player Setup');
         folder.add(params, 'scale', 0.1, 5.0).onChange(v => { if(loadedCarMesh) loadedCarMesh.scale.set(v,v,v); });
         folder.add(params, 'lift', -2, 5).onChange(v => { if(loadedCarMesh) loadedCarMesh.position.y = v; });
-        // Live Rotation Test:
-        folder.add(params, 'rotationY', 0, 360).onChange(v => { 
-            if(loadedCarMesh) loadedCarMesh.rotation.y = v * (Math.PI/180); 
-        });
         folder.open();
     }
 
+    function loadAssets() {
+        // Spieler Dummy erstellen (bis Modell geladen ist)
+        playerGroup = new THREE.Group();
+        carModel = new THREE.Group();
+        const startOffset = (BLOCK_SIZE + STREET_WIDTH) / 2;
+        playerGroup.position.set(startOffset, 0.5, startOffset);
+        playerGroup.add(carModel);
+        scene.add(playerGroup);
+
+        const loader = new OBJLoader();
+
+        // 1. Spieler Auto laden
+        loader.load(PLAYER_FILE, (object) => {
+            loadedCarMesh = object;
+            object.scale.set(CAR_SCALE, CAR_SCALE, CAR_SCALE);
+            object.position.y = CAR_LIFT;
+            object.rotation.y = CAR_ROTATION;
+            
+            const paint = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.7, roughness: 0.2 });
+            object.traverse(c => { if(c.isMesh) { c.material = paint; c.castShadow = true; }});
+            carModel.add(object);
+            
+            // Reifen für Rauch
+            let t1 = new THREE.Object3D(); t1.position.set(-1.5,0,1.5); carModel.add(t1); tires.push(t1);
+            let t2 = new THREE.Object3D(); t2.position.set(1.5,0,1.5); carModel.add(t2); tires.push(t2);
+
+            // 2. KI Auto laden (nachdem Spieler da ist)
+            loadAICar(loader);
+
+        }, undefined, () => {
+            console.error("Player OBJ not found");
+            // Fallback Box
+            const box = new THREE.Mesh(new THREE.BoxGeometry(2,1,4), new THREE.MeshStandardMaterial({color:'red'}));
+            carModel.add(box);
+            loadAICar(loader);
+        });
+    }
+
+    function loadAICar(loader) {
+        loader.load(AI_FILE, (object) => {
+            document.getElementById('loading').style.display = 'none';
+            console.log("AI SLS Loaded");
+            
+            // Template vorbereiten
+            object.scale.set(CAR_SCALE, CAR_SCALE, CAR_SCALE);
+            object.position.y = CAR_LIFT - 0.6; // KI schwebt manchmal, daher Korrektur
+            object.rotation.y = CAR_ROTATION;
+
+            // KI Material (Silber/Metallic)
+            const aiPaint = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.6, roughness: 0.3 });
+            object.traverse(c => { if(c.isMesh) { c.material = aiPaint; c.castShadow = true; }});
+
+            aiCarTemplate = object;
+            
+            // Jetzt KI spawnen
+            spawnTraffic(12);
+
+        }, undefined, () => {
+            document.getElementById('loading').innerText = "SLS.obj fehlt! Nutze Boxen für KI.";
+            document.getElementById('loading').style.color = "red";
+            setTimeout(() => { document.getElementById('loading').style.display = 'none'; spawnTraffic(12); }, 2000);
+        });
+    }
+
+    // --- STADT & PARKS ---
     function createCity() {
         const groundGeo = new THREE.PlaneGeometry(3000, 3000);
         const groundMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
@@ -151,8 +209,8 @@
         scene.add(ground);
 
         const buildingGeo = new THREE.BoxGeometry(1, 1, 1); 
-        const buildingMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.2 });
-
+        const buildingMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.4 });
+        
         const totalCellSize = BLOCK_SIZE + STREET_WIDTH;
 
         for (let x = -CITY_SIZE/2; x < CITY_SIZE/2; x++) {
@@ -161,38 +219,107 @@
                 const posX = x * totalCellSize;
                 const posZ = z * totalCellSize;
 
-                const height = Math.random() * (BUILDING_HEIGHT_MAX - BUILDING_HEIGHT_MIN) + BUILDING_HEIGHT_MIN;
-                
-                const building = new THREE.Mesh(buildingGeo, buildingMat);
-                building.position.set(posX, height/2, posZ);
-                building.scale.set(BLOCK_SIZE, height, BLOCK_SIZE);
-                building.castShadow = true;
-                building.receiveShadow = true;
-                scene.add(building);
+                // Zufallsentscheidung: Park oder Gebäude?
+                if (Math.random() < PARK_CHANCE) {
+                    createPark(posX, posZ);
+                } else {
+                    createBuilding(posX, posZ, buildingGeo, buildingMat);
+                }
 
-                colliders.push({ x: posX, z: posZ, w: BLOCK_SIZE, d: BLOCK_SIZE });
-
-                const sidewalk = new THREE.Mesh(
-                    new THREE.BoxGeometry(BLOCK_SIZE + 4, 0.4, BLOCK_SIZE + 4),
-                    new THREE.MeshStandardMaterial({ color: 0x777777 })
-                );
-                sidewalk.position.set(posX, 0.2, posZ);
-                sidewalk.receiveShadow = true;
-                scene.add(sidewalk);
-
+                // Straßenmarkierungen
                 createZebraCrossing(posX + totalCellSize/2, posZ); 
                 createZebraCrossing(posX, posZ + totalCellSize/2); 
             }
         }
     }
 
-    function createZebraCrossing(x, z) {
-        const stripeGeo = new THREE.PlaneGeometry(3, 12);
-        const stripeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        const group = new THREE.Group();
+    function createBuilding(x, z, geo, mat) {
+        const height = Math.random() * 80 + 30;
+        const building = new THREE.Mesh(geo, mat);
+        building.position.set(x, height/2, z);
+        building.scale.set(BLOCK_SIZE, height, BLOCK_SIZE);
+        building.castShadow = true;
+        building.receiveShadow = true;
+        scene.add(building);
+
+        // Fenster-Lichter (zufällig)
+        if(Math.random()>0.3) {
+            const winGeo = new THREE.BoxGeometry(BLOCK_SIZE+0.5, height/2, BLOCK_SIZE+0.5);
+            const winMat = new THREE.MeshBasicMaterial({color: 0xffffaa, transparent:true, opacity:0.1});
+            const wins = new THREE.Mesh(winGeo, winMat);
+            wins.position.copy(building.position);
+            scene.add(wins);
+        }
+
+        colliders.push({ x: x, z: z, w: BLOCK_SIZE, d: BLOCK_SIZE, type: 'building' });
+
+        const sidewalk = new THREE.Mesh(new THREE.BoxGeometry(BLOCK_SIZE + 4, 0.4, BLOCK_SIZE + 4), new THREE.MeshStandardMaterial({ color: 0x666666 }));
+        sidewalk.position.set(x, 0.2, z);
+        scene.add(sidewalk);
+    }
+
+    function createPark(x, z) {
+        // Grüner Boden
+        const parkGeo = new THREE.BoxGeometry(BLOCK_SIZE, 0.5, BLOCK_SIZE);
+        const parkMat = new THREE.MeshStandardMaterial({ color: 0x228822 });
+        const parkBase = new THREE.Mesh(parkGeo, parkMat);
+        parkBase.position.set(x, 0.25, z);
+        parkBase.receiveShadow = true;
+        scene.add(parkBase);
+
+        // Bäume
+        const trunkGeo = new THREE.CylinderGeometry(0.8, 1, 3);
+        const trunkMat = new THREE.MeshStandardMaterial({color:0x553311});
+        const leafGeo = new THREE.DodecahedronGeometry(3);
+        const leafMat = new THREE.MeshStandardMaterial({color:0x116611});
+
+        for(let i=0; i<8; i++) { // 8 Bäume pro Park
+            const tree = new THREE.Group();
+            const trunk = new THREE.Mesh(trunkGeo, trunkMat); trunk.position.y = 1.5;
+            const leaf = new THREE.Mesh(leafGeo, leafMat); leaf.position.y = 4.5;
+            tree.add(trunk); tree.add(leaf);
+            
+            // Zufallsposition im Park
+            const tx = (Math.random()-0.5) * (BLOCK_SIZE - 5);
+            const tz = (Math.random()-0.5) * (BLOCK_SIZE - 5);
+            tree.position.set(x + tx, 0, z + tz);
+            tree.castShadow = true;
+            scene.add(tree);
+        }
+
+        // ZÄUNE (Barriere)
+        // Wir bauen 4 Wände um den Park
+        const fenceH = 2.5;
+        const fenceThick = 1;
+        const fenceMat = new THREE.MeshStandardMaterial({ color: 0x554433 }); // Holz/Metall Zaun
         
+        // Zäune speichern wir als ein großes Kollisionsobjekt (wie ein Gebäude), damit man nicht reinfahren kann
+        colliders.push({ x: x, z: z, w: BLOCK_SIZE, d: BLOCK_SIZE, type: 'fence' });
+
+        // Visuelle Zäune
+        const half = BLOCK_SIZE / 2;
+        const walls = [
+            { pos: [x, fenceH/2, z-half], scale: [BLOCK_SIZE, fenceH, fenceThick] }, // Oben
+            { pos: [x, fenceH/2, z+half], scale: [BLOCK_SIZE, fenceH, fenceThick] }, // Unten
+            { pos: [x-half, fenceH/2, z], scale: [fenceThick, fenceH, BLOCK_SIZE] }, // Links
+            { pos: [x+half, fenceH/2, z], scale: [fenceThick, fenceH, BLOCK_SIZE] }  // Rechts
+        ];
+
+        walls.forEach(w => {
+            const wall = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), fenceMat);
+            wall.position.set(...w.pos);
+            wall.scale.set(...w.scale);
+            wall.castShadow = true;
+            scene.add(wall);
+        });
+    }
+
+    function createZebraCrossing(x, z) {
+        const group = new THREE.Group();
+        const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const geo = new THREE.PlaneGeometry(3, 12);
         for(let i=-2; i<=2; i++) {
-            const stripe = new THREE.Mesh(stripeGeo, stripeMat);
+            const stripe = new THREE.Mesh(geo, mat);
             stripe.rotation.x = -Math.PI/2;
             stripe.position.set(i*5, 0.05, 0); 
             group.add(stripe);
@@ -201,49 +328,19 @@
         scene.add(group);
     }
 
-    function createCar() {
-        playerGroup = new THREE.Group();
-        carModel = new THREE.Group();
-        
-        const startStreetOffset = (BLOCK_SIZE + STREET_WIDTH) / 2;
-        playerGroup.position.set(startStreetOffset, 0.5, startStreetOffset);
-        
-        // PlayerGroup schaut initial in eine Richtung
-        playerGroup.rotation.y = 0; 
-
-        playerGroup.add(carModel);
-        scene.add(playerGroup);
-
-        const objLoader = new OBJLoader();
-        objLoader.load(CAR_FILE, (object) => {
-            document.getElementById('loading').style.display = 'none';
-            loadedCarMesh = object;
-            object.scale.set(CAR_SCALE, CAR_SCALE, CAR_SCALE);
-            object.position.y = CAR_LIFT;
-            
-            // HIER WIRD DAS MODELL VISUELL GEDREHT
-            object.rotation.y = CAR_ROTATION; 
-            
-            const paint = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.6, roughness: 0.2 });
-            object.traverse(c => { if(c.isMesh) { c.material = paint; c.castShadow = true; }});
-            carModel.add(object);
-            
-            let t1 = new THREE.Object3D(); t1.position.set(-1.5,0,1.5); carModel.add(t1); tires.push(t1);
-            let t2 = new THREE.Object3D(); t2.position.set(1.5,0,1.5); carModel.add(t2); tires.push(t2);
-        }, undefined, () => {
-            document.getElementById('loading').innerText = "OBJ Fehlt! Lade Box...";
-            const box = new THREE.Mesh(new THREE.BoxGeometry(2,1,4), new THREE.MeshStandardMaterial({color:'red'}));
-            box.position.y=1; carModel.add(box);
-        });
-    }
-
+    // --- KI SYSTEM ---
     function spawnTraffic(count) {
-        const carGeo = new THREE.BoxGeometry(2, 1.2, 4.5);
+        if (!aiCarTemplate && !document.getElementById('loading').innerText.includes('Box')) return; // Warten bis Template da ist
+
         for(let i=0; i<count; i++) {
-            const color = Math.random() > 0.5 ? 0xffcc00 : 0x3366ff; 
-            const aiMat = new THREE.MeshStandardMaterial({ color: color });
-            const aiCar = new THREE.Mesh(carGeo, aiMat);
-            
+            let aiCar;
+            if (aiCarTemplate) {
+                aiCar = aiCarTemplate.clone();
+            } else {
+                // Fallback Box
+                aiCar = new THREE.Mesh(new THREE.BoxGeometry(2,1.5,4.5), new THREE.MeshStandardMaterial({color: Math.random()>0.5?0xffcc00:0x0000ff}));
+            }
+
             const totalSize = BLOCK_SIZE + STREET_WIDTH;
             const gx = Math.floor(Math.random() * CITY_SIZE) - CITY_SIZE/2;
             const gz = Math.floor(Math.random() * CITY_SIZE) - CITY_SIZE/2;
@@ -251,52 +348,86 @@
             const isHorizontal = Math.random() > 0.5;
             let x, z, rot;
             
+            // Wir setzen die Autos strikt auf die rechte Fahrbahn
+            // Straße ist 40 breit. Mitte ist 0. Rechts fahren = +10 Offset, Links = -10 Offset.
+            const laneOffset = 10; 
+
             if (isHorizontal) {
+                // X-Achse Straße
                 x = gx * totalSize;
-                z = gz * totalSize + totalSize/2; 
-                rot = Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2;
+                z = gz * totalSize + totalSize/2 + laneOffset; // Rechte Spur
+                rot = -Math.PI/2; // Nach Rechts fahren (Positiv X)
             } else {
-                x = gx * totalSize + totalSize/2;
+                // Z-Achse Straße
+                x = gx * totalSize + totalSize/2 - laneOffset; // Rechte Spur (wenn wir nach unten gucken)
                 z = gz * totalSize;
-                rot = Math.random() > 0.5 ? 0 : Math.PI;
+                rot = Math.PI; // Nach Unten fahren (Positiv Z) - DreiJS standard "hinten" ist +Z
             }
 
-            aiCar.position.set(x, 0.6, z);
+            aiCar.position.set(x, 0.5, z);
             aiCar.rotation.y = rot;
-            aiCar.castShadow = true;
-            aiCar.userData = { speed: 0.5 + Math.random() * 0.5, targetRot: rot, isTurning: false };
+            
+            aiCar.userData = { speed: 0.6 + Math.random() * 0.4, state: 'drive' };
             scene.add(aiCar);
             aiCars.push(aiCar);
         }
     }
 
     function updateAI() {
+        // Raycaster für Kollisionsvermeidung
         const raycaster = new THREE.Raycaster();
+        const totalSize = BLOCK_SIZE + STREET_WIDTH;
+
         aiCars.forEach(ai => {
+            // Blickrichtung des KI Autos (Invertiert wegen Modell-Rotation)
             const forward = new THREE.Vector3(0,0,1).applyAxisAngle(new THREE.Vector3(0,1,0), ai.rotation.y);
-            raycaster.set(ai.position, forward);
-            const hits = raycaster.intersectObject(playerGroup, true);
+            // Invertiere Vektor weil Auto-Modell um 180 gedreht ist (Z ist hinten beim Modell, wir fahren aber "vorwärts")
+            // Moment: Player car brauchte 180 flip. Wenn SLS auch 180 flip hat, ist "Vorne" im lokalen Raum -Z.
+            // Im Weltraum müssen wir das berücksichtigen.
+            // Einfacher: Wir nutzen die echte Bewegungsrichtung.
+            
+            const moveDir = new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0), ai.rotation.y);
+
+            // Raycast nach vorne
+            raycaster.set(ai.position, moveDir);
+            
+            // Prüfe Kollision mit Player
+            const hitsPlayer = raycaster.intersectObject(playerGroup, true);
+            
             let blocked = false;
-            if (hits.length > 0 && hits[0].distance < 15) blocked = true;
+            if (hitsPlayer.length > 0 && hitsPlayer[0].distance < 15) blocked = true;
 
+            // Fahre nur wenn frei
             if (!blocked) {
-                ai.position.add(forward.multiplyScalar(ai.userData.speed));
+                ai.position.add(moveDir.multiplyScalar(ai.userData.speed));
             }
 
-            const totalSize = BLOCK_SIZE + STREET_WIDTH;
-            const modX = Math.abs(ai.position.x + totalSize/2) % totalSize;
-            const modZ = Math.abs(ai.position.z + totalSize/2) % totalSize;
-            
-            if (Math.random() < 0.01) {
-                const turn = Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2;
-                ai.rotation.y += turn;
+            // Kreuzungs-Logik (Simpel: Fahre geradeaus, biege zufällig ab)
+            // Wir nutzen Modulo um Kreuzungen zu finden
+            const centerOffset = totalSize / 2;
+            const relX = (ai.position.x + 10000 + centerOffset) % totalSize; // +10000 um negative Werte zu vermeiden
+            const relZ = (ai.position.z + 10000 + centerOffset) % totalSize;
+
+            // Kreuzungsmitte ist bei ca 0 (oder nahe totalSize)
+            // Wir erlauben abbiegen nur wenn wir nah an der Mitte der Kreuzung sind
+            const tolerance = 2.0; 
+            const atIntersectionX = relX < tolerance || relX > totalSize - tolerance;
+            const atIntersectionZ = relZ < tolerance || relZ > totalSize - tolerance;
+
+            if (atIntersectionX && atIntersectionZ && Math.random() < 0.05) {
+                // Zufällig abbiegen (90 Grad)
+                ai.rotation.y += Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2;
+                // Position korrigieren um auf der Spur zu bleiben (Hack)
+                // ai.position.x = Math.round(ai.position.x / 10) * 10;
+                // ai.position.z = Math.round(ai.position.z / 10) * 10;
             }
-            
-            const bound = (CITY_SIZE * totalSize) / 2 + 50;
-            if (ai.position.x > bound) ai.position.x = -bound;
-            if (ai.position.x < -bound) ai.position.x = bound;
-            if (ai.position.z > bound) ai.position.z = -bound;
-            if (ai.position.z < -bound) ai.position.z = bound;
+
+            // Weltgrenzen (Teleport zur anderen Seite)
+            const limit = (CITY_SIZE * totalSize) / 2;
+            if (ai.position.x > limit) ai.position.x = -limit + 10;
+            if (ai.position.x < -limit) ai.position.x = limit - 10;
+            if (ai.position.z > limit) ai.position.z = -limit + 10;
+            if (ai.position.z < -limit) ai.position.z = limit - 10;
         });
     }
 
@@ -314,34 +445,26 @@
         document.getElementById('speed-text').innerText = Math.abs(Math.floor(speed * 120));
         document.getElementById('pos-text').innerText = `${Math.round(playerGroup.position.x)}, ${Math.round(playerGroup.position.z)}`;
 
-        // --- STEUERUNG FIX ---
-        // W = Gas (Positiv)
         if (keys.w) speed += acceleration;
-        else if (keys.s) speed -= acceleration; // S = Bremse/Rückwärts
+        else if (keys.s) speed -= acceleration;
         else speed *= friction;
 
         if (speed > maxSpeed) speed = maxSpeed;
         if (speed < -0.8) speed = -0.8;
 
-        // Lenken
         if (Math.abs(speed) > 0.05) {
-            const dir = speed > 0 ? 1 : -1; // Invertiert Lenkung beim Rückwärtsfahren
+            const dir = speed > 0 ? 1 : -1;
             if(keys.a) playerGroup.rotation.y += turnSpeed * dir;
             if(keys.d) playerGroup.rotation.y -= turnSpeed * dir;
         }
 
-        // --- BEWEGUNG FIX ---
-        // Wenn speed > 0, wollen wir "vorwärts". 
-        // In Three.js ist Vorwärts oft -Z. Aber wir haben das Auto umgedreht.
-        // Also: Wir bewegen uns entlang des "blauen Pfeils" (Z-Achse) des PlayerGroups.
-        // Wir nutzen hier -speed, damit W vorwärts fährt (in den Bildschirm hinein, standard Three.js vorwärts).
-        
+        // Bewegung
         const velocity = new THREE.Vector3(0, 0, -speed).applyAxisAngle(new THREE.Vector3(0,1,0), playerGroup.rotation.y);
         const newPos = playerGroup.position.clone().add(velocity);
 
-        // Kollision
+        // Kollision (Gebäude + Zäune)
         let collision = false;
-        const carSize = 2.5; 
+        const carSize = 2.0; 
 
         for (let b of colliders) {
             const bMinX = b.x - b.w/2;
@@ -357,7 +480,7 @@
         }
 
         if (collision) {
-            speed = -speed * 0.5; // Abprallen
+            speed = -speed * 0.5; // Bounce
         } else {
             playerGroup.position.copy(newPos);
         }

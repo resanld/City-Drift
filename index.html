@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>City Drift: Metropolis</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Arial', sans-serif; user-select: none; }
+        
+        #hud {
+            position: absolute; top: 20px; left: 20px;
+            color: white; z-index: 10;
+            background: linear-gradient(90deg, rgba(0,0,0,0.9), transparent);
+            padding: 15px; border-left: 5px solid #00d2ff; border-radius: 5px;
+            pointer-events: none;
+        }
+        
+        .stat { font-size: 20px; font-weight: bold; margin-bottom: 5px; text-shadow: 1px 1px 2px black; }
+        
+        #controls { 
+            position: absolute; bottom: 20px; right: 20px; 
+            color: rgba(255,255,255,0.8); text-align: right; font-size: 14px; 
+            background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; pointer-events: none;
+        }
+
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 24px; font-weight: bold; background: rgba(0,0,0,0.8); padding: 20px;
+            z-index: 200; border: 2px solid white;
+        }
+    </style>
+</head>
+<body>
+
+<div id="loading">Generiere Stadt & Lade Auto...</div>
+
+<div id="hud">
+    <div class="stat" style="color:#00d2ff">CITY DRIFT</div>
+    <div class="stat">Speed: <span id="speed-text">0</span> km/h</div>
+    <div class="stat" style="font-size:14px; color:#aaa">Pos: <span id="pos-text">0, 0</span></div>
+</div>
+
+<div id="controls">
+    <b>W</b> Gas | <b>S</b> Bremse/Rückwärts<br>
+    <b>A/D</b> Lenken | <b>SPACE</b> Drift
+</div>
+
+<script type="module">
+    import * as THREE from 'https://cdn.skypack.dev/three@0.132.2';
+    import { OBJLoader } from 'https://cdn.skypack.dev/three@0.132.2/examples/jsm/loaders/OBJLoader.js';
+    import { GUI } from 'https://cdn.skypack.dev/dat.gui';
+
+    // === EINSTELLUNGEN ===
+    const CAR_FILE = 'porsche.obj'; 
+    const CAR_SCALE = 2.0;    
+    const CAR_LIFT = 1.1;     
+    const CAR_ROTATION = 0;   
+
+    // STADT CONFIG
+    const BLOCK_SIZE = 80;    // Größe eines Häuserblocks
+    const STREET_WIDTH = 40;  // Breite der Straße
+    const CITY_SIZE = 10;     // 10x10 Blöcke (Riesig!)
+    const BUILDING_HEIGHT_MIN = 20;
+    const BUILDING_HEIGHT_MAX = 120;
+
+    // Globale Variablen
+    let scene, camera, renderer;
+    let playerGroup, carModel, loadedCarMesh; 
+    let tires = [], particles = [];
+    let colliders = []; // Gebäude für Kollision
+    let aiCars = [];    // Liste der KI Autos
+
+    // Physik
+    let speed = 0;
+    let maxSpeed = 2.0; 
+    let acceleration = 0.015; 
+    let friction = 0.98; 
+    let turnSpeed = 0.045;
+    let currentDriftAngle = 0;
+    
+    let keys = { w:false, a:false, s:false, d:false, space:false };
+
+    // Debug GUI
+    const params = { scale: CAR_SCALE, lift: CAR_LIFT, rotationY: 0 };
+
+    init();
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111); // Nacht/Dämmerung
+        scene.fog = new THREE.Fog(0x111111, 50, 600);
+
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 2000);
+        
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // Licht
+        const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambient);
+        
+        const dirLight = new THREE.DirectionalLight(0xffeebb, 0.8);
+        dirLight.position.set(200, 500, 300);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.set(2048, 2048);
+        // Großer Schattenbereich für die Stadt
+        dirLight.shadow.camera.left = -500; dirLight.shadow.camera.right = 500;
+        dirLight.shadow.camera.top = 500; dirLight.shadow.camera.bottom = -500;
+        scene.add(dirLight);
+
+        // Stadt generieren
+        createCity();
+        
+        // KI Verkehr starten
+        spawnTraffic(15); // 15 Autos
+
+        // Spieler Auto laden
+        createCar();
+        
+        // GUI
+        initGUI();
+
+        // Inputs
+        window.addEventListener('keydown', e => { if(keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = true; if(e.code === 'Space') keys.space = true; if(e.key.toLowerCase() === 'r') location.reload(); });
+        window.addEventListener('keyup', e => { if(keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = false; if(e.code === 'Space') keys.space = false; });
+        window.addEventListener('resize', () => { camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+    }
+
+    function initGUI() {
+        const gui = new GUI();
+        const folder = gui.addFolder('Auto Setup');
+        folder.add(params, 'scale', 0.1, 5.0).onChange(v => { if(loadedCarMesh) loadedCarMesh.scale.set(v,v,v); });
+        folder.add(params, 'lift', -2, 5).onChange(v => { if(loadedCarMesh) loadedCarMesh.position.y = v; });
+        folder.open();
+    }
+
+    // --- STADT GENERATOR ---
+    function createCity() {
+        // Boden (Asphalt überall, wir bauen Häuser drauf)
+        const groundGeo = new THREE.PlaneGeometry(3000, 3000);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        const buildingGeo = new THREE.BoxGeometry(1, 1, 1); // Basisgeometrie wiederverwenden
+        const buildingMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.2 });
+        const windowMat = new THREE.MeshBasicMaterial({ color: 0xffffaa }); // Leuchtende Fenster
+
+        const totalCellSize = BLOCK_SIZE + STREET_WIDTH;
+        const offset = (CITY_SIZE * totalCellSize) / 2;
+
+        // Grid Loop
+        for (let x = -CITY_SIZE/2; x < CITY_SIZE/2; x++) {
+            for (let z = -CITY_SIZE/2; z < CITY_SIZE/2; z++) {
+                
+                const posX = x * totalCellSize;
+                const posZ = z * totalCellSize;
+
+                // 1. GEBÄUDE (Der Block in der Mitte)
+                // Zufällige Höhe
+                const height = Math.random() * (BUILDING_HEIGHT_MAX - BUILDING_HEIGHT_MIN) + BUILDING_HEIGHT_MIN;
+                
+                // Wir nutzen Mesh für jedes Gebäude (einfachste Methode, Instancing wäre performanter aber komplexer)
+                const building = new THREE.Mesh(buildingGeo, buildingMat);
+                building.position.set(posX, height/2, posZ);
+                building.scale.set(BLOCK_SIZE, height, BLOCK_SIZE);
+                building.castShadow = true;
+                building.receiveShadow = true;
+                scene.add(building);
+
+                // Kollisionsbox speichern (x, z, width, depth)
+                colliders.push({ x: posX, z: posZ, w: BLOCK_SIZE, d: BLOCK_SIZE });
+
+                // Deko: Gehweg um das Haus
+                const sidewalk = new THREE.Mesh(
+                    new THREE.BoxGeometry(BLOCK_SIZE + 4, 0.4, BLOCK_SIZE + 4),
+                    new THREE.MeshStandardMaterial({ color: 0x777777 })
+                );
+                sidewalk.position.set(posX, 0.2, posZ);
+                sidewalk.receiveShadow = true;
+                scene.add(sidewalk);
+
+                // 2. STRASSENMARKIERUNGEN & ZEBRASTREIFEN
+                // Wir malen Zebrastreifen an die Kreuzungen (in der Mitte zwischen den Blöcken)
+                createZebraCrossing(posX + totalCellSize/2, posZ); // Rechts vom Block
+                createZebraCrossing(posX, posZ + totalCellSize/2); // Unter dem Block
+            }
+        }
+    }
+
+    function createZebraCrossing(x, z) {
+        // Weißer Streifen
+        const stripeGeo = new THREE.PlaneGeometry(3, 12);
+        const stripeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const group = new THREE.Group();
+        
+        // 5 Streifen nebeneinander
+        for(let i=-2; i<=2; i++) {
+            const stripe = new THREE.Mesh(stripeGeo, stripeMat);
+            stripe.rotation.x = -Math.PI/2;
+            stripe.position.set(i*5, 0.05, 0); // Leicht über Boden
+            group.add(stripe);
+        }
+        
+        // Wir erstellen Zebras horizontal und vertikal an Kreuzungen
+        // Dies ist eine vereinfachte Darstellung
+        group.position.set(x, 0, z);
+        scene.add(group);
+    }
+
+    // --- PLAYER CAR ---
+    function createCar() {
+        playerGroup = new THREE.Group();
+        carModel = new THREE.Group();
+        
+        // Start auf einer Straße (0,0 ist mitten im Block, also verschieben wir es)
+        const startStreetOffset = (BLOCK_SIZE + STREET_WIDTH) / 2;
+        playerGroup.position.set(startStreetOffset, 0.5, startStreetOffset);
+        
+        playerGroup.add(carModel);
+        scene.add(playerGroup);
+
+        const objLoader = new OBJLoader();
+        objLoader.load(CAR_FILE, (object) => {
+            document.getElementById('loading').style.display = 'none';
+            loadedCarMesh = object;
+            object.scale.set(CAR_SCALE, CAR_SCALE, CAR_SCALE);
+            object.position.y = CAR_LIFT;
+            object.rotation.y = Math.PI; 
+            
+            const paint = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.6, roughness: 0.2 });
+            object.traverse(c => { if(c.isMesh) { c.material = paint; c.castShadow = true; }});
+            carModel.add(object);
+            
+            // Dummy Reifen für Rauch
+            let t1 = new THREE.Object3D(); t1.position.set(-1.5,0,1.5); carModel.add(t1); tires.push(t1);
+            let t2 = new THREE.Object3D(); t2.position.set(1.5,0,1.5); carModel.add(t2); tires.push(t2);
+        }, undefined, () => {
+            document.getElementById('loading').innerText = "OBJ Fehlt! Lade Box...";
+            const box = new THREE.Mesh(new THREE.BoxGeometry(2,1,4), new THREE.MeshStandardMaterial({color:'red'}));
+            box.position.y=1; carModel.add(box);
+        });
+    }
+
+    // --- AI TRAFFIC SYSTEM ---
+    function spawnTraffic(count) {
+        const carGeo = new THREE.BoxGeometry(2, 1.2, 4.5);
+        
+        for(let i=0; i<count; i++) {
+            const color = Math.random() > 0.5 ? 0xffcc00 : 0x3366ff; // Taxi Gelb oder Blau
+            const aiMat = new THREE.MeshStandardMaterial({ color: color });
+            const aiCar = new THREE.Mesh(carGeo, aiMat);
+            
+            // Zufällige Startposition auf einer Straße
+            const totalSize = BLOCK_SIZE + STREET_WIDTH;
+            // Zufälliger Index im Grid
+            const gx = Math.floor(Math.random() * CITY_SIZE) - CITY_SIZE/2;
+            const gz = Math.floor(Math.random() * CITY_SIZE) - CITY_SIZE/2;
+            
+            // Entweder auf X-Straße oder Z-Straße platzieren
+            const isHorizontal = Math.random() > 0.5;
+            let x, z, rot;
+            
+            if (isHorizontal) {
+                // Auf horizontaler Straße (zwischen Z-Blöcken)
+                x = gx * totalSize;
+                z = gz * totalSize + totalSize/2; 
+                rot = Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2;
+            } else {
+                // Auf vertikaler Straße
+                x = gx * totalSize + totalSize/2;
+                z = gz * totalSize;
+                rot = Math.random() > 0.5 ? 0 : Math.PI;
+            }
+
+            aiCar.position.set(x, 0.6, z);
+            aiCar.rotation.y = rot;
+            aiCar.castShadow = true;
+            
+            // KI Daten
+            aiCar.userData = {
+                speed: 0.5 + Math.random() * 0.5,
+                targetRot: rot,
+                isTurning: false
+            };
+
+            scene.add(aiCar);
+            aiCars.push(aiCar);
+        }
+    }
+
+    function updateAI() {
+        const raycaster = new THREE.Raycaster();
+        
+        aiCars.forEach(ai => {
+            const forward = new THREE.Vector3(0,0,1).applyAxisAngle(new THREE.Vector3(0,1,0), ai.rotation.y);
+            
+            // 1. Raycast nach vorne (Stau vermeiden)
+            raycaster.set(ai.position, forward);
+            // Wir prüfen nur Kollision mit PlayerGroup für jetzt (einfach)
+            const hits = raycaster.intersectObject(playerGroup, true);
+            let blocked = false;
+            if (hits.length > 0 && hits[0].distance < 15) blocked = true;
+
+            // 2. Bewegung
+            if (!blocked) {
+                ai.position.add(forward.multiplyScalar(ai.userData.speed));
+            }
+
+            // 3. Kreuzungen (Einfache Logik: Wenn Koordinaten nahe Grid-Schnittpunkten sind)
+            const totalSize = BLOCK_SIZE + STREET_WIDTH;
+            // Modulo check um Kreuzung zu finden
+            const modX = Math.abs(ai.position.x + totalSize/2) % totalSize;
+            const modZ = Math.abs(ai.position.z + totalSize/2) % totalSize;
+            
+            // Kreuzungsbereich ist dort, wo Straßen sich treffen (Mitte zwischen Blöcken)
+            // Wir prüfen, ob wir nah an einem Kreuzungspunkt sind.
+            // Vereinfachung: Zufällig abbiegen alle paar Sekunden
+            if (Math.random() < 0.01) {
+                const turn = Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2;
+                ai.rotation.y += turn;
+            }
+            
+            // Endlos-Welt-Wrap (Wenn sie zu weit fahren, kommen sie auf der anderen Seite raus)
+            const bound = (CITY_SIZE * totalSize) / 2 + 50;
+            if (ai.position.x > bound) ai.position.x = -bound;
+            if (ai.position.x < -bound) ai.position.x = bound;
+            if (ai.position.z > bound) ai.position.z = -bound;
+            if (ai.position.z < -bound) ai.position.z = bound;
+        });
+    }
+
+    function spawnSmoke(pos) {
+        if(Math.random()>0.3)return; 
+        const p=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.5,0.5),new THREE.MeshBasicMaterial({color:0xaaaaaa,transparent:true,opacity:0.4}));
+        p.position.copy(pos); p.position.y=0.2; 
+        p.rotation.set(Math.random(), Math.random(), Math.random());
+        scene.add(p); particles.push({mesh:p, life:1.0});
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        document.getElementById('speed-text').innerText = Math.abs(Math.floor(speed * 120));
+        document.getElementById('pos-text').innerText = `${Math.round(playerGroup.position.x)}, ${Math.round(playerGroup.position.z)}`;
+
+        // --- PHYSIK ---
+        if (keys.w) speed += acceleration;
+        else if (keys.s) speed -= acceleration;
+        else speed *= friction;
+
+        if (speed > maxSpeed) speed = maxSpeed;
+        if (speed < -0.8) speed = -0.8;
+
+        // Lenken
+        if (Math.abs(speed) > 0.05) {
+            const dir = speed > 0 ? 1 : -1;
+            if(keys.a) playerGroup.rotation.y += turnSpeed * dir;
+            if(keys.d) playerGroup.rotation.y -= turnSpeed * dir;
+        }
+
+        // Vorläufige neue Position berechnen
+        const velocity = new THREE.Vector3(0, 0, speed).applyAxisAngle(new THREE.Vector3(0,1,0), playerGroup.rotation.y);
+        const newPos = playerGroup.position.clone().add(velocity);
+
+        // --- KOLLISION MIT GEBÄUDEN ---
+        let collision = false;
+        // Auto Hitbox Größe (grob)
+        const carSize = 2.5; 
+
+        for (let b of colliders) {
+            // AABB Kollision (Axis Aligned Bounding Box)
+            // Gebäude Grenzen
+            const bMinX = b.x - b.w/2;
+            const bMaxX = b.x + b.w/2;
+            const bMinZ = b.z - b.d/2;
+            const bMaxZ = b.z + b.d/2;
+
+            // Auto Grenzen (neue Position)
+            if (newPos.x + carSize > bMinX && newPos.x - carSize < bMaxX &&
+                newPos.z + carSize > bMinZ && newPos.z - carSize < bMaxZ) {
+                collision = true;
+                break;
+            }
+        }
+
+        if (collision) {
+            // Bei Crash: Stop und zurückprallen
+            speed = -speed * 0.5;
+        } else {
+            // Keine Kollision: Bewegen
+            playerGroup.position.copy(newPos);
+        }
+
+        // --- DRIFT VISUALS ---
+        let targetAngle = 0;
+        if (keys.space && Math.abs(speed) > 0.5) {
+            if (keys.a) targetAngle = 0.5;
+            else if (keys.d) targetAngle = -0.5;
+            tires.forEach(t => { const p=new THREE.Vector3(); t.getWorldPosition(p); spawnSmoke(p); });
+            speed *= 0.99;
+        }
+        currentDriftAngle = THREE.MathUtils.lerp(currentDriftAngle, targetAngle, 0.1);
+        carModel.rotation.y = currentDriftAngle;
+
+        // --- AI UPDATE ---
+        updateAI();
+
+        // --- KAMERA ---
+        const relativeCamOffset = new THREE.Vector3(0, 8, 20); 
+        const cameraOffset = relativeCamOffset.applyMatrix4(playerGroup.matrixWorld);
+        camera.position.lerp(cameraOffset, 0.1);
+        const lookAtTarget = new THREE.Vector3(0, 2, -10); 
+        lookAtTarget.applyMatrix4(playerGroup.matrixWorld);
+        camera.lookAt(lookAtTarget);
+
+        // Partikel
+        for(let i=particles.length-1; i>=0; i--) { 
+            let p = particles[i]; p.life-=0.02; p.mesh.position.y+=0.05; 
+            p.mesh.scale.multiplyScalar(1.05); p.mesh.material.opacity=p.life*0.5; 
+            if(p.life<=0){ scene.remove(p.mesh); particles.splice(i,1); }
+        }
+
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
